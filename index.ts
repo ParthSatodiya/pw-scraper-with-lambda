@@ -1,4 +1,4 @@
-import { Browser, chromium } from 'playwright-chromium';
+import { Browser, BrowserContext, chromium } from 'playwright-chromium';
 import { Handler, APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { URLSearchParams } from 'url';
 
@@ -6,9 +6,15 @@ interface RequestBody {
     searchStr: string
 }
 
+interface searchResult {
+    headline?: string,
+    url?: null|string,
+    siteName?: string
+}
+
 interface ResponseBody {
-    google?: Array<string>,
-    bing?: Array<string>,
+    google?: Array<searchResult>,
+    bing?: Array<searchResult>,
     error?: string
 }
 
@@ -47,9 +53,6 @@ export const handler: Handler = async (event?: APIGatewayProxyEventV2, context?:
     }
 
     response["body"] = JSON.stringify(responseBody);
-    if (event === undefined) {
-        console.log(response);
-    }
     return response;
 };
 
@@ -58,7 +61,7 @@ export async function main(searchStr: string) {
     const browser = await chromium.launch({
         headless: true,
         args: [
-            "--single-process",
+            // "--single-process",
             "--disable-gpu",
             '--disable-dev-shm-usage',
             '--disable-setuid-sandbox',
@@ -70,10 +73,16 @@ export async function main(searchStr: string) {
             '--disable-site-isolation-trials',
         ]
     });
+    const context = await browser.newContext();
 
-    let result: ResponseBody = {};
+    let results: ResponseBody = {};
     try {
-        result["google"] = await googleSearch(browser, searchStr);
+        const multipleResults = await Promise.all([
+            googleSearch(context, searchStr),
+            bingSearch(context, searchStr)
+        ])
+        results["google"] = multipleResults[0];
+        results["bing"] = multipleResults[1];
     } catch (e: any) {
         console.log("Error searching results.", e);
         await browser.close();
@@ -81,24 +90,60 @@ export async function main(searchStr: string) {
     }
 
     await browser.close();
-    return result;
+    console.log(JSON.stringify(results))
+    return results;
 }
 
-const googleSearch = async (browser: Browser, searchStr: string): Promise<Array<string>> => {
+const googleSearch = async (context: BrowserContext, searchStr: string): Promise<Array<searchResult>> => {
 
-    const page = await browser.newPage();
-    const result: Array<string> = [];
+    const page = await context.newPage();
+    const result: Array<searchResult> = [];
     const queryParam = new URLSearchParams({q: searchStr}).toString();
-    console.log({queryParam});
+    console.log(`Searching on google at https://google.com/search?${queryParam}`)
     await page.goto(`https://google.com/search?${queryParam}`);
 
-    const mainHeadings = page.locator("h3").locator('visible=true');
-    const count = await mainHeadings.count();
+    const headlines = page.locator("a", { has: page.locator("h3").locator('visible=true')});
+    const count = await headlines.count();
     for (let i=0; i<count; i++) {
-        const headingStr = await mainHeadings.nth(i).innerText();
-        console.log(headingStr);
-        result.push(headingStr);
+        let headline, url, siteName;
+        try {
+            headline = await headlines.nth(i).locator("h3").innerText({timeout: 1000});
+            url = await headlines.nth(i).getAttribute("href", {timeout: 1000});
+            siteName = await headlines.nth(i).locator("div > div > span").innerText({timeout: 1000});
+        } catch (e) {
+            continue;
+        }
+        result.push({headline, url, siteName});
     }
+    console.log("Google complete");
+
+    await page.close();
+    return result
+}
+
+const bingSearch = async (context: BrowserContext, searchStr: string): Promise<Array<searchResult>> => {
+
+    const page = await context.newPage();
+    const result: Array<searchResult> = [];
+    const queryParam = new URLSearchParams({q: searchStr}).toString();
+    console.log(`Searching on bing at https://www.bing.com/search?${queryParam}`)
+    await page.goto(`https://www.bing.com/search?${queryParam}`);
+    await page.waitForLoadState("networkidle");
+
+    const headlines = page.locator(".b_algo");
+    const count = await headlines.count();
+    for (let i=0; i<count; i++) {
+        let headline, url, siteName;
+        try {
+            headline = await headlines.nth(i).locator("h2").first().innerText();
+            url = await headlines.nth(i).locator("h2 > a").getAttribute("href");
+            siteName = await headlines.nth(i).locator(".tptt").innerText();
+        } catch (e) {
+            continue;
+        }
+        result.push({headline, url, siteName});
+    }
+    console.log("Bing complete");
 
     await page.close();
     return result
