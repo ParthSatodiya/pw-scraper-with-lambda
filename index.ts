@@ -1,5 +1,5 @@
-import { Browser, BrowserContext, chromium } from 'playwright-chromium';
-import { Handler, APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { BrowserContext, chromium } from 'playwright-chromium';
+import { Handler, APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { URLSearchParams } from 'url';
 
 interface RequestBody {
@@ -18,13 +18,15 @@ interface ResponseBody {
     error?: string
 }
 
-export const handler: Handler = async (event?: APIGatewayProxyEventV2, context?: any): Promise<APIGatewayProxyResultV2> => {
-    // console.log("EVENT: \n" + JSON.stringify(event, null, 2));
+export const handler: Handler = async (event?: APIGatewayProxyEvent, context?: any): Promise<APIGatewayProxyResult> => {
+    console.log("EVENT: \n" + JSON.stringify(event, null, 2));
     // console.log("CONTEXT: \n" + JSON.stringify(context, null, 2));
 
     let requestBody: undefined|RequestBody;
 
-    if (event?.body) {
+    if (!event || event.body == undefined) {
+        requestBody = {searchStr: "Hello world"}
+    } else if (event?.body) {
         requestBody = JSON.parse(event?.body);
     }
     
@@ -33,12 +35,13 @@ export const handler: Handler = async (event?: APIGatewayProxyEventV2, context?:
     }
     console.log("Request body: ", requestBody);
 
-    let response: APIGatewayProxyResultV2 = {
+    let response: APIGatewayProxyResult = {
         statusCode: 200,
         headers: {
             "Content-Type": "application/json"
         },
         isBase64Encoded: false,
+        body: ""
     }
     let responseBody: ResponseBody;
 
