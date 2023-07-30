@@ -14,6 +14,7 @@ interface searchResult {
 
 interface ResponseBody {
     google?: Array<searchResult>,
+    brave?: Array<searchResult>,
     bing?: Array<searchResult>,
     error?: string
 }
@@ -49,6 +50,7 @@ export const handler: Handler = async (event?: APIGatewayProxyEvent, context?: a
         responseBody = await main(requestBody.searchStr);
         console.log("Completed!");
     } catch (e: any) {
+        console.log(e);
         responseBody = {
             "error": "Failed to scrape!"
         }
@@ -64,7 +66,7 @@ export async function main(searchStr: string) {
     const browser = await chromium.launch({
         headless: true,
         args: [
-            // "--single-process",
+            "--single-process",
             "--disable-gpu",
             '--disable-dev-shm-usage',
             '--disable-setuid-sandbox',
@@ -80,12 +82,19 @@ export async function main(searchStr: string) {
 
     let results: ResponseBody = {};
     try {
-        const multipleResults = await Promise.all([
-            googleSearch(context, searchStr),
-            bingSearch(context, searchStr)
-        ])
-        results["google"] = multipleResults[0];
-        results["bing"] = multipleResults[1];
+        //// "--single-process" chromium option is require in order to run playwright scraper on lambda 
+        //// Parallel tabs does not work with this option. So can't do the searching simultaneously
+
+        // const multipleResults = await Promise.all([
+        //     googleSearch(context, searchStr),
+        //     braveSearch(context, searchStr)
+        // ])
+        // results["google"] = multipleResults[0];
+        // results["brave"] = multipleResults[1];
+
+        results["google"] = await googleSearch(context, searchStr);
+        results["brave"] = await braveSearch(context, searchStr);
+        
     } catch (e: any) {
         console.log("Error searching results.", e);
         await browser.close();
@@ -106,6 +115,7 @@ const googleSearch = async (context: BrowserContext, searchStr: string): Promise
     await page.goto(`https://google.com/search?${queryParam}`);
 
     const headlines = page.locator("a", { has: page.locator("h3").locator('visible=true')});
+    await headlines.first().waitFor({state: "visible", timeout: 10000})
     const count = await headlines.count();
     for (let i=0; i<count; i++) {
         let headline, url, siteName;
@@ -124,16 +134,47 @@ const googleSearch = async (context: BrowserContext, searchStr: string): Promise
     return result
 }
 
+const braveSearch = async (context: BrowserContext, searchStr: string): Promise<Array<searchResult>> => {
+
+    const page = await context.newPage();
+    const result: Array<searchResult> = [];
+    const queryParam = new URLSearchParams({q: searchStr}).toString();
+    console.log(`Searching on brave at https://search.brave.com/search?${queryParam}`)
+    await page.goto(`https://search.brave.com/search?${queryParam}`);
+
+    const headlines = page.locator("div.snippet.fdb");
+    const count = await headlines.count();
+    for (let i=0; i<count; i++) {
+        let headline, url, siteName;
+        try {
+            headline = await headlines.nth(i).locator("a > span").innerText({timeout: 1000});
+            url = await headlines.nth(i).locator("> a").getAttribute("href", {timeout: 1000});
+            siteName = await headlines.nth(i).locator("a > cite > span.netloc").innerText({timeout: 1000});
+        } catch (e) {
+            console.log(e);
+            continue;
+        }
+        result.push({headline, url, siteName});
+    }
+    console.log("Brave complete");
+
+    await page.close();
+    return result
+}
+
 const bingSearch = async (context: BrowserContext, searchStr: string): Promise<Array<searchResult>> => {
 
     const page = await context.newPage();
     const result: Array<searchResult> = [];
     const queryParam = new URLSearchParams({q: searchStr}).toString();
     console.log(`Searching on bing at https://www.bing.com/search?${queryParam}`)
-    await page.goto(`https://www.bing.com/search?${queryParam}`);
-    await page.waitForLoadState("networkidle");
+    await page.goto(`https://www.bing.com/`);
+    await page.locator("#sb_form_q").click();
+    await page.locator("#sb_form_q").fill(searchStr)
+    await page.locator("#search_icon").click();
 
     const headlines = page.locator(".b_algo");
+    await headlines.first().waitFor({state: "visible", timeout: 10000})
     const count = await headlines.count();
     for (let i=0; i<count; i++) {
         let headline, url, siteName;
